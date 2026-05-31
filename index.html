@@ -196,6 +196,10 @@ input[type=text]::placeholder{color:#55527a}
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-thumb{background:var(--bg-card);border-radius:3px}
 </style>
+
+<!-- Firebase CDN -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
 <canvas id="stars-canvas"></canvas>
@@ -345,6 +349,65 @@ input[type=text]::placeholder{color:#55527a}
 
 </div><!-- .app -->
 <script>
+
+/* ══════════════════════════════════════════
+   FIREBASE — Classement partagé
+══════════════════════════════════════════ */
+const firebaseConfig = {
+  apiKey: "AIzaSyDAVUjNjE4JJMMxr8q8SKSxA8t6MsHtiAY",
+  authDomain: "quiz-eglise-c246f.firebaseapp.com",
+  projectId: "quiz-eglise-c246f",
+  storageBucket: "quiz-eglise-c246f.firebasestorage.app",
+  messagingSenderId: "5794508373",
+  appId: "1:5794508373:web:c7298c4235a96ee9a8aedc"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+async function fbSavePlayer(name, data) {
+  try {
+    let totalScore=0, totalQ=0;
+    ['bible','advanced','pasteurs','all'].forEach(cat => {
+      const c = data.completedCats[cat];
+      if(c){ totalScore += c.score; totalQ += c.total; }
+    });
+    const pct = totalQ > 0 ? Math.round((totalScore/totalQ)*100) : 0;
+    const now = new Date();
+    const date = now.getDate().toString().padStart(2,'0')+'/'+(now.getMonth()+1).toString().padStart(2,'0');
+    await db.collection("players").doc(name).set({
+      name, completedCats: data.completedCats,
+      locked: data.locked||false,
+      totalScore, totalQ, pct, date,
+      updatedAt: now.toISOString()
+    });
+    console.log("Score sauvegardé dans Firebase ✓");
+  } catch(e){ console.warn("Firebase save error:", e); }
+}
+
+async function fbLoadPlayer(name) {
+  try {
+    const doc = await db.collection("players").doc(name).get();
+    if(doc.exists) return doc.data();
+  } catch(e){ console.warn("Firebase load error:", e); }
+  return null;
+}
+
+async function fbLoadLeaderboard() {
+  try {
+    const snap = await db.collection("players")
+      .where("locked","==",true)
+      .orderBy("pct","desc")
+      .get();
+    const results = [];
+    snap.forEach(d => results.push(d.data()));
+    return results;
+  } catch(e){
+    console.warn("Firebase LB error:", e);
+    return [];
+  }
+}
+
 /* ÉTOILES */
 (function(){
   const c=document.getElementById('stars-canvas'),ctx=c.getContext('2d');
@@ -570,7 +633,10 @@ const CAT_ICONS={bible:'\ud83d\udcd6',advanced:'\u271d',pasteurs:'\ud83c\udfe1',
 /* STOCKAGE */
 const STORE_PREFIX='quiz_v3_';
 function getPlayerData(name){try{const r=localStorage.getItem(STORE_PREFIX+name);if(r)return JSON.parse(r);}catch(e){}return{completedCats:{},locked:false};}
-function savePlayerData(name,data){localStorage.setItem(STORE_PREFIX+name,JSON.stringify(data));}
+function savePlayerData(name,data){
+  localStorage.setItem(STORE_PREFIX+name,JSON.stringify(data));
+  fbSavePlayer(name,data);
+}
 const LB_KEY='quiz_v3_leaderboard';
 function getLB(){try{return JSON.parse(localStorage.getItem(LB_KEY))||[];}catch(e){return[];}}
 function saveLB(arr){localStorage.setItem(LB_KEY,JSON.stringify(arr));}
@@ -610,6 +676,18 @@ function goHome(){
   playerName=n;localStorage.setItem('quiz_last_player',n);
   startMusic();playSound('click');
   playerData=getPlayerData(n);
+  // Sync Firebase → localStorage
+  fbLoadPlayer(n).then(fbData=>{
+    if(fbData){
+      const fbDone=Object.keys(fbData.completedCats||{}).length;
+      const localDone=Object.keys(playerData.completedCats).length;
+      if(fbData.locked || fbDone > localDone){
+        playerData={completedCats:fbData.completedCats||{},locked:fbData.locked||false};
+        localStorage.setItem(STORE_PREFIX+n,JSON.stringify(playerData));
+        updateCatScreen();
+      }
+    }
+  }).catch(()=>{});
   if(playerData.locked){viewLeaderboard();toast('\ud83c\udfc6 Vous avez d\u00e9j\u00e0 termin\u00e9 les 4 niveaux !');return;}
   updateCatScreen();showScreen('screen-category');
 }
@@ -740,7 +818,7 @@ function goNextLevel(){playSound('click');updateCatScreen();showScreen('screen-c
 
 /* CLASSEMENT */
 function viewLeaderboard(){playSound('click');loadLB();showScreen('screen-leaderboard');}
-function loadLB(){
+async function loadLB(){
   const lb=getLB();lb.sort((a,b)=>b.pct-a.pct||a.totalQ-b.totalQ);
   const list=document.getElementById('lb-list');
   if(!lb.length){list.innerHTML='<div class="lb-empty">Aucun joueur n\'a encore termin\u00e9 les 4 niveaux.<br>Soyez le premier !</div>';return;}
